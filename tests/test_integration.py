@@ -141,3 +141,55 @@ async def test_unknown_reply_is_dropped(drill_env):
     await asyncio.sleep(0.1)
     sock.close()
     assert core.snapshot()["counters"]["dropped_unknown"] >= 1
+
+
+async def test_hundreds_of_egress_ports_round_trip():
+    """Real sockets at drill scale: 260 egress ports, first-fit in config order."""
+    port_count = 260
+    egress_ports = list(range(18000, 18000 + port_count))
+    echo_a = await start_echo("echo-a", 16801)
+    echo_b = await start_echo("echo-b", 16802)
+    upstreams = [
+        Upstream("echo-a", "上游 A", "127.0.0.1", 16801, 15801),
+        Upstream("echo-b", "上游 B", "127.0.0.1", 16802, 15802),
+    ]
+    core = GatewayCore(
+        egress_ports=egress_ports,
+        upstreams={"echo-a": "上游 A", "echo-b": "上游 B"},
+    )
+    runtime = GatewayRuntime(core, upstreams, egress_ports)
+    await runtime.start()
+    clients = ClientPool(
+        runtime,
+        [
+            ("client-1", "客户端 1", "127.0.0.11"),
+            ("client-2", "客户端 2", "127.0.0.12"),
+            ("client-3", "客户端 3", "127.0.0.13"),
+        ],
+    )
+    await clients.start()
+    try:
+        assert len(runtime.egress) == port_count  # one real socket per port
+        one = clients.get("client-1").send("echo-a", 0, "scale-a")
+        two = clients.get("client-2").send("echo-b", 0, "scale-b")
+        three = clients.get("client-3").send("echo-a", 0, "scale-a2")
+
+        assert await wait_for(lambda: one.status != "waiting"), one
+        assert await wait_for(lambda: two.status != "waiting"), two
+        assert await wait_for(lambda: three.status != "waiting"), three
+
+        assert one.status == two.status == three.status == "received"
+        # Different upstreams share the first port; the second echo-a session
+        # takes the next port in config order.
+        assert one.received["gateway_egress_port"] == 18000
+        assert two.received["gateway_egress_port"] == 18000
+        assert three.received["gateway_egress_port"] == 18001
+
+        snapshot = core.snapshot()
+        assert len(snapshot["ports"]) == port_count
+        assert snapshot["counters"]["delivered"] == 3
+    finally:
+        await clients.stop()
+        await runtime.stop()
+        echo_a.close()
+        echo_b.close()

@@ -4,6 +4,11 @@ Usage: python3 -I scripts/verify_api.py [base_url]
 
 `-I` keeps the interpreter from importing anything out of the working
 directory; the script only uses the standard library.
+
+The script adapts to the configured egress-port count: port-exhaustion
+scenarios need more clients than ports (the drill has three clients), so
+they run only when the gateway was started with a small EGRESS_PORTS set,
+e.g. `EGRESS_PORTS=17000,17001 docker compose up --build`.
 """
 
 from __future__ import annotations
@@ -91,6 +96,13 @@ def main() -> int:
         if not condition:
             failures.append(label)
 
+    snap = state()
+    egress_ports = snap["config"]["egress_ports"]
+    port_count = len(egress_ports)
+    first_port, second_port = egress_ports[0], egress_ports[1] if port_count > 1 else None
+    print(f"出口端口数：{port_count}（{egress_ports[0]}..{egress_ports[-1]}）")
+    check(port_count >= 2, "配置包含至少 2 个出口端口", f"{port_count} 个")
+
     show("场景 1：三个客户端 → 两个上游（0 ms 延迟）")
     wait_until_free()
     call("/api/send-batch", {"delay_ms": 0, "body": "场景1"})
@@ -121,37 +133,46 @@ def main() -> int:
         "三个客户端均收到真实回包",
     )
     check(
-        c1["egress_port"] == c2["egress_port"] == 17000,
-        "不同上游共用出口端口 17000",
+        c1["egress_port"] == c2["egress_port"] == first_port,
+        f"不同上游共用出口端口 {first_port}",
         f"client-1={c1['egress_port']} client-2={c2['egress_port']}",
     )
     check(
-        c3["egress_port"] == 17001,
-        "同一上游（echo-a）的第二个会话占用另一端口 17001",
+        c3["egress_port"] == second_port,
+        f"同一上游（echo-a）的第二个会话占用下一端口 {second_port}",
         f"client-3={c3['egress_port']}",
     )
 
-    show("场景 2：两个客户端并发到 echo-a，第三个被拒绝（无可用端口）")
-    call("/api/reset", {"confirm": True})
-    wait_until_free()
-    first = send("client-1", "echo-a", 0, "占用1")
-    second = send("client-2", "echo-a", 0, "占用2")
-    third = send("client-3", "echo-a", 0, "占用3")
-    print(f"  client-1: {first['status']} {first.get('request_id')}")
-    print(f"  client-2: {second['status']} {second.get('request_id')}")
-    print(f"  client-3: {third['status']} → {third.get('error')}")
-    wait_status("client-3", third["request_id"], {"received", "rejected", "timeout"})
-    rejected = wait_status("client-3", third["request_id"], {"rejected"})
-    check(rejected["status"] == "rejected", "第三个 echo-a 会话未转发并收到拒绝原因")
-    check(
-        "无可用出口端口" in (rejected.get("error") or ""),
-        "网页可展示的拒绝原因包含无可用端口说明",
-        (rejected.get("error") or "")[:120],
-    )
-    check(
-        latest("client-3")["received"] is None,
-        "被拒绝的请求没有伪造回包",
-    )
+    show("场景 2：端口耗尽时逐个报明原因（仅端口数 < 3 时可演练）")
+    if port_count < 3:
+        call("/api/reset", {"confirm": True})
+        wait_until_free()
+        first = send("client-1", "echo-a", 0, "占用1")
+        second = send("client-2", "echo-a", 0, "占用2")
+        third = send("client-3", "echo-a", 0, "占用3")
+        print(f"  client-1: {first['status']} {first.get('request_id')}")
+        print(f"  client-2: {second['status']} {second.get('request_id')}")
+        print(f"  client-3: {third['status']} → {third.get('error')}")
+        wait_status("client-3", third["request_id"], {"received", "rejected", "timeout"})
+        rejected = wait_status("client-3", third["request_id"], {"rejected"})
+        check(rejected["status"] == "rejected", "第三个 echo-a 会话未转发并收到拒绝原因")
+        check(
+            "无可用出口端口" in (rejected.get("error") or ""),
+            "网页可展示的拒绝原因包含无可用端口说明",
+            (rejected.get("error") or "")[:120],
+        )
+        check(
+            len(rejected.get("blocked") or []) == port_count,
+            "拒绝原因逐个列出每个端口的占用情况",
+            f"{len(rejected.get('blocked') or [])}/{port_count}",
+        )
+        check(
+            latest("client-3")["received"] is None,
+            "被拒绝的请求没有伪造回包",
+        )
+    else:
+        print(f"  SKIP：当前 {port_count} 个出口端口，3 个客户端无法耗尽；")
+        print("       用 EGRESS_PORTS=17000,17001 启动可演练此场景（单测已覆盖）。")
 
     show("场景 3：800 ms 延迟仍在会话寿命内，回包送达")
     call("/api/reset", {"confirm": True})
@@ -172,7 +193,7 @@ def main() -> int:
     check(
         any(q["upstream"] == "echo-a" for p in snap["ports"] for q in p["quarantines"]),
         "echo-a 会话失效后原端口进入 2 秒保留期",
-        json.dumps(snap["ports"], ensure_ascii=False),
+        json.dumps([p for p in snap["ports"] if p["sessions"] or p["quarantines"]], ensure_ascii=False),
     )
     fresh = send("client-2", "echo-b", 300, "复用端口")
     got_fresh = wait_status("client-2", fresh["request_id"], {"received", "timeout"})
@@ -182,8 +203,8 @@ def main() -> int:
     )
     check(got_fresh["status"] == "received", "保留期内端口仍可分配给另一上游")
     check(
-        got_fresh.get("received", {}).get("gateway_egress_port") == 17000,
-        "echo-b 复用了 17000",
+        got_fresh.get("received", {}).get("gateway_egress_port") == first_port,
+        f"echo-b 复用了 {first_port}",
     )
     check(
         got_fresh.get("received", {}).get("body") == "复用端口",
@@ -209,31 +230,37 @@ def main() -> int:
         + " ".join(f"{k}={v}" for k, v in snap["counters"].items())
     )
 
-    show("场景 5：两个端口都在 echo-a 保留期时，echo-a 新会话被拒绝")
-    call("/api/reset", {"confirm": True})
-    wait_until_free()
-    for client in ("client-1", "client-2"):
-        sent = send(client, "echo-a", 0, "占位")
-        wait_status(client, sent["request_id"], {"received", "timeout"})
-    # Sessions expire 1 s after the forward; poll until the pairs are quarantined.
-    deadline = time.time() + 3.0
-    while time.time() < deadline:
-        snap = state()
-        q = [x for p in snap["ports"] for x in p["quarantines"] if x["upstream"] == "echo-a"]
-        if not snap["sessions"] and len(q) == 2:
-            break
-        time.sleep(0.05)
-    check(len(q) == 2, "两个端口都进入 echo-a 的保留期", json.dumps(q, ensure_ascii=False))
-    blocked = send("client-3", "echo-a", 0, "保留期内")
-    result = wait_status("client-3", blocked["request_id"], {"received", "rejected", "timeout"})
-    print(f"  status={result['status']} error={result.get('error')}")
-    check(result["status"] == "rejected", "保留期内同上游新会话被拒绝")
-    check("保留期" in (result.get("error") or ""), "拒绝原因说明保留期")
-    check(result.get("received") is None, "被拒绝时客户端没有收到伪造回包")
+    show("场景 5：全部端口都在 echo-a 保留期时，echo-a 新会话被拒绝（仅端口数 < 3 时可演练）")
+    if port_count < 3:
+        call("/api/reset", {"confirm": True})
+        wait_until_free()
+        for client in ("client-1", "client-2"):
+            sent = send(client, "echo-a", 0, "占位")
+            wait_status(client, sent["request_id"], {"received", "timeout"})
+        # Sessions expire 1 s after the forward; poll until the pairs are quarantined.
+        q = []
+        deadline = time.time() + 3.0
+        while time.time() < deadline:
+            snap = state()
+            q = [x for p in snap["ports"] for x in p["quarantines"] if x["upstream"] == "echo-a"]
+            if not snap["sessions"] and len(q) == port_count:
+                break
+            time.sleep(0.05)
+        check(len(q) == port_count, "全部端口都进入 echo-a 的保留期", json.dumps(q, ensure_ascii=False))
+        blocked = send("client-3", "echo-a", 0, "保留期内")
+        result = wait_status("client-3", blocked["request_id"], {"received", "rejected", "timeout"})
+        print(f"  status={result['status']} error={result.get('error')}")
+        check(result["status"] == "rejected", "保留期内同上游新会话被拒绝")
+        check("保留期" in (result.get("error") or ""), "拒绝原因说明保留期")
+        check(result.get("received") is None, "被拒绝时客户端没有收到伪造回包")
+    else:
+        print(f"  SKIP：当前 {port_count} 个出口端口，3 个客户端无法全部占入保留期；")
+        print("       用 EGRESS_PORTS=17000,17001 启动可演练此场景（单测已覆盖）。")
 
     show("最终状态")
     snap = state()
-    print(json.dumps({"ports": snap["ports"], "counters": snap["counters"]}, ensure_ascii=False, indent=2))
+    busy_ports = [p for p in snap["ports"] if p["sessions"] or p["quarantines"]]
+    print(json.dumps({"busy_ports": busy_ports, "counters": snap["counters"]}, ensure_ascii=False, indent=2))
 
     show("结果")
     if failures:

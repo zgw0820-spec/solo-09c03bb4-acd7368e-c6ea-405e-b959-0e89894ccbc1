@@ -9,7 +9,10 @@ services:
     ports:
       - "127.0.0.1:${WEB_PORT:-8000}:8000"
     environment:
-      EGRESS_PORTS: "17000,17001"
+      # 600 egress ports (17000-17599).  Ranges and comma lists both work;
+      # override e.g. `EGRESS_PORTS=17000,17001 docker compose up --build`
+      # to run the original two-port drill.
+      EGRESS_PORTS: "${EGRESS_PORTS:-17000-17599}"
       ECHO_A_HOST: echo-a
       ECHO_B_HOST: echo-b
       SESSION_IDLE_SECONDS: "1.0"

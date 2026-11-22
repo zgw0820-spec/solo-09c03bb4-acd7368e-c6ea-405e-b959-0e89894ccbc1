@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>UDP 双端口出口 · 运维演练</title>
+<title>UDP 多端口出口 · 运维演练</title>
 <style>
   :root {
     --bg: #0b1120;
@@ -162,8 +162,8 @@
 <body>
 <header>
   <div>
-    <h1>UDP 双端口出口 · 运维演练</h1>
-    <div class="sub">三个本地客户端 → 两个回显服务；网关仅有两个上游出口端口，按会话分配与复用</div>
+    <h1>UDP 多端口出口 · 运维演练</h1>
+    <div class="sub">三个本地客户端 → 两个回显服务；网关按「客户端 + 上游」分配与复用出口端口</div>
   </div>
   <div class="toolbar">
     <span class="pill" id="health-pill"><span class="dot"></span><span id="health-text">连接中…</span></span>
@@ -218,6 +218,12 @@
 
   <section style="margin-bottom:16px">
     <h2>出口端口占用 <span class="hint">绿色 = 活动会话；黄色 = 迟到回包保留期</span></h2>
+    <div class="row" style="margin-bottom:10px;align-items:center">
+      <span class="small muted" id="ports-summary"></span>
+      <label class="small muted" id="idle-toggle-wrap" style="display:none">
+        <input type="checkbox" id="show-idle"> 显示空闲端口
+      </label>
+    </div>
     <div class="ports" id="ports"></div>
     <div class="legend" style="margin-top:12px">
       <span><i style="background:#34d399"></i>活动会话</span>
@@ -250,7 +256,7 @@
       <div class="flow" id="flow"></div>
       <div class="small muted">
         <p style="margin-top:0">分配顺序：先按 (客户端 IP, 客户端端口, 上游) 查活动会话；存在则沿用原出口端口并续期。
-        不存在则从两个出口端口中选择一个「未被同一上游占用、且不在该上游保留期内」的端口。
+        不存在则按配置顺序取第一个「未被同一上游占用、且不在该上游保留期内」的端口。
         两个上游互不排斥，因此可以共用端口。</p>
         <p>回包判定：按到达的出口端口与来源（映射回上游）查活动会话，命中则只送给该会话对应的客户端；
         若处于保留期则丢弃并记 <span class="mono">drop_late</span>，避免迟到的旧回包被新会话误收。</p>
@@ -441,7 +447,14 @@ function renderInbox(host, client) {
 
 function renderPorts(ports, config) {
   const host = $("#ports");
-  const html = ports.map((port) => {
+  const busy = ports.filter((p) => p.sessions.length || p.quarantines.length);
+  const summary = `共 ${ports.length} 个出口端口：${busy.length} 个占用/保留 · ${ports.length - busy.length} 个空闲`;
+  $("#ports-summary").textContent = summary;
+  const manyPorts = ports.length > 24;
+  $("#idle-toggle-wrap").style.display = manyPorts ? "" : "none";
+  const showIdle = !manyPorts || $("#show-idle").checked;
+  const visible = showIdle ? ports : busy;
+  const html = visible.map((port) => {
     const slots = [];
     for (const session of port.sessions) {
       const pct = Math.max(0, Math.min(100, (session.remaining_ms / (config.session_idle_seconds * 1000)) * 100));
@@ -467,7 +480,14 @@ function renderPorts(ports, config) {
       ${slots.join("")}
     </div>`;
   }).join("");
-  if (host.dataset.signature !== html) { host.innerHTML = html; host.dataset.signature = html; }
+  const note = showIdle ? "" : busy.length
+    ? `<div class="empty">其余 ${ports.length - busy.length} 个端口空闲（勾选「显示空闲端口」展开）</div>`
+    : `<div class="empty">全部 ${ports.length} 个端口空闲（勾选「显示空闲端口」展开）</div>`;
+  const signature = html + note;
+  if (host.dataset.signature !== signature) {
+    host.innerHTML = html + note;
+    host.dataset.signature = signature;
+  }
 }
 
 function renderSessions(sessions, config) {
@@ -527,17 +547,27 @@ function renderEvents(events, lastSeq) {
 }
 
 function renderFlow(config, runtime) {
+  const ports = config.egress_ports;
+  const contiguous = ports.length > 1 && ports[ports.length - 1] - ports[0] === ports.length - 1;
+  const egressDesc = ports.length <= 4
+    ? ports.join(" / ")
+    : contiguous
+      ? `${ports[0]}–${ports[ports.length - 1]}（共 ${ports.length} 个）`
+      : `${ports.slice(0, 3).join(" / ")} / …（共 ${ports.length} 个）`;
   const lines = [];
   lines.push("客户端（网关容器内，独立 UDP 源端口）");
   lines.push("  client-1 ─┐");
   lines.push("  client-2 ─┼─▶ ingress :15001 (echo-a) ─┐");
-  lines.push("  client-3 ─┘                            ├─▶ egress :17000 / :17001 ─▶ echo-a / echo-b");
+  lines.push(`  client-3 ─┘                            ├─▶ egress :${egressDesc} ─▶ echo-a / echo-b`);
   lines.push("            └──▶ ingress :15002 (echo-b) ─┘");
   lines.push("");
-  lines.push(`出口端口：${config.egress_ports.join(" / ")}`);
+  lines.push(`出口端口：${egressDesc}`);
   lines.push(`会话寿命：${config.session_idle_seconds} s · 组合保留：${config.quarantine_seconds} s`);
   $("#flow").innerHTML = lines.map((line) => `<div>${esc(line) || "&nbsp;"}</div>`).join("");
   $("#port-count").textContent = config.egress_ports.length;
+  $("#batch-3a").textContent = config.egress_ports.length < 3
+    ? "3 并发到 A · 演示无可用端口"
+    : "3 并发到 A · 各占一个出口端口";
 }
 
 let refreshing = false;
@@ -584,6 +614,7 @@ function bind() {
     { client_id: "client-3", upstream: "echo-a", delay_ms: state.delay, body: $("#body").value },
   ], "3 并发到 A"));
   $("#reset-btn").addEventListener("click", resetAll);
+  $("#show-idle").addEventListener("change", () => { $("#ports").dataset.signature = ""; refresh(); });
   onDelayInput();
 }
 

@@ -457,7 +457,32 @@ class ClientPool:
 
 
 def parse_ports(value: str) -> list[int]:
-    ports = [int(part) for part in value.split(",") if part.strip()]
+    """Parse "17000,17001,17010-17019" into a list of unique ports.
+
+    Ranges (``start-end``) expand in ascending order; comma-separated items
+    keep their config order, which is also the allocation order.
+    """
+    ports: list[int] = []
+    for part in value.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if "-" in part[1:]:  # range like 17000-17599 (a leading '-' is invalid input)
+            start_text, _, end_text = part.partition("-")
+            try:
+                start, end = int(start_text), int(end_text)
+            except ValueError as exc:
+                raise ValueError(f"invalid port range {part!r}") from exc
+            if end < start:
+                raise ValueError(f"invalid port range {part!r}: end before start")
+            ports.extend(range(start, end + 1))
+        else:
+            ports.append(int(part))
+    if not ports:
+        raise ValueError("no egress ports configured")
     if len(set(ports)) != len(ports):
         raise ValueError("duplicate ports in configuration")
+    for port in ports:
+        if not 1 <= port <= 65535:
+            raise ValueError(f"port out of range: {port}")
     return ports

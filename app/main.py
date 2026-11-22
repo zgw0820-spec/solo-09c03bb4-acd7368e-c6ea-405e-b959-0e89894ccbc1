@@ -113,7 +113,7 @@ async def lifespan(app: FastAPI):
         await drill.stop()
 
 
-app = FastAPI(title="UDP 双端口出口演练", lifespan=lifespan)
+app = FastAPI(title="UDP 多端口出口演练", lifespan=lifespan)
 
 
 @app.get("/")
