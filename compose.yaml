@@ -1,0 +1,45 @@
+name: udp-egress-drill
+
+services:
+  gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: udp-egress-drill-gateway:local
+    ports:
+      - "127.0.0.1:${WEB_PORT:-8000}:8000"
+    environment:
+      EGRESS_PORTS: "17000,17001"
+      ECHO_A_HOST: echo-a
+      ECHO_B_HOST: echo-b
+      SESSION_IDLE_SECONDS: "1.0"
+      QUARANTINE_SECONDS: "2.0"
+      CLIENT1_BIND_IP: 127.0.0.11
+      CLIENT2_BIND_IP: 127.0.0.12
+      CLIENT3_BIND_IP: 127.0.0.13
+    depends_on:
+      echo-a:
+        condition: service_started
+      echo-b:
+        condition: service_started
+    restart: unless-stopped
+
+  echo-a:
+    build:
+      context: .
+      dockerfile: Dockerfile.echo
+    image: udp-egress-drill-echo:local
+    environment:
+      ECHO_NAME: echo-a
+      ECHO_PORT: "16001"
+    restart: unless-stopped
+
+  echo-b:
+    build:
+      context: .
+      dockerfile: Dockerfile.echo
+    image: udp-egress-drill-echo:local
+    environment:
+      ECHO_NAME: echo-b
+      ECHO_PORT: "16002"
+    restart: unless-stopped

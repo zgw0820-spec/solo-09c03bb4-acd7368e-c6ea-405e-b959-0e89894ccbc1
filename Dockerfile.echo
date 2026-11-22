@@ -1,0 +1,9 @@
+FROM python:3.12-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+WORKDIR /srv
+COPY app/echo_service.py ./echo_service.py
+
+CMD ["python", "echo_service.py"]

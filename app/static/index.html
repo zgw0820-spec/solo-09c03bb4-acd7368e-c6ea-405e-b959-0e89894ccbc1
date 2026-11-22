@@ -1,0 +1,595 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>UDP 双端口出口 · 运维演练</title>
+<style>
+  :root {
+    --bg: #0b1120;
+    --bg-2: #111a2e;
+    --card: #151f36;
+    --card-2: #1b2742;
+    --line: #26344f;
+    --text: #e7eefc;
+    --muted: #8fa1c1;
+    --accent: #4ea1ff;
+    --ok: #34d399;
+    --warn: #fbbf24;
+    --bad: #f87171;
+    --vio: #a78bfa;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: radial-gradient(1200px 600px at 20% -10%, #17264a 0%, var(--bg) 55%);
+    color: var(--text); font: 14px/1.55 system-ui, -apple-system, "Segoe UI", "PingFang SC", sans-serif;
+    min-height: 100vh;
+  }
+  header {
+    padding: 22px 28px 14px; display: flex; flex-wrap: wrap; gap: 14px;
+    align-items: center; justify-content: space-between;
+    border-bottom: 1px solid var(--line);
+  }
+  header h1 { font-size: 19px; margin: 0; letter-spacing: .3px; }
+  header .sub { color: var(--muted); font-size: 12.5px; margin-top: 3px; }
+  .pill {
+    display: inline-flex; align-items: center; gap: 6px; font-family: var(--mono);
+    font-size: 11.5px; padding: 4px 10px; border-radius: 999px;
+    border: 1px solid var(--line); background: var(--bg-2); color: var(--muted);
+  }
+  .pill .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); }
+  .pill.ok .dot { background: var(--ok); box-shadow: 0 0 8px var(--ok); }
+  .pill.bad .dot { background: var(--bad); }
+  main { padding: 18px 28px 60px; max-width: 1500px; margin: 0 auto; }
+  .grid { display: grid; gap: 16px; }
+  .grid.cols-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .grid.cols-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  @media (max-width: 1100px) { .grid.cols-3, .grid.cols-2 { grid-template-columns: 1fr; } }
+  section { background: linear-gradient(180deg, var(--card) 0%, var(--card-2) 100%);
+    border: 1px solid var(--line); border-radius: 14px; padding: 16px 18px; }
+  section h2 { margin: 0 0 12px; font-size: 14px; font-weight: 600; letter-spacing: .4px;
+    display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+  section h2 .hint { font-weight: 400; font-size: 11.5px; color: var(--muted); }
+  .toolbar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+  button {
+    font: inherit; font-size: 13px; color: var(--text); background: #1e2c4a;
+    border: 1px solid #31456c; border-radius: 9px; padding: 8px 14px; cursor: pointer;
+    transition: .15s border-color, .15s background, .15s transform;
+  }
+  button:hover { background: #25375c; border-color: #46639a; }
+  button:active { transform: translateY(1px); }
+  button.primary { background: linear-gradient(180deg, #2f7bff, #2364d6); border-color: #4a8dff; }
+  button.primary:hover { background: linear-gradient(180deg, #3d87ff, #2a6fe4); }
+  button.danger { background: #3b1f28; border-color: #6b3141; color: #ffc9d3; }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  button.ghost { background: transparent; }
+  input[type=text], select {
+    font: inherit; font-size: 13px; color: var(--text); background: #0e1729;
+    border: 1px solid #2c3d60; border-radius: 8px; padding: 8px 10px; outline: none;
+  }
+  input[type=text]:focus, select:focus { border-color: var(--accent); }
+  input[type=range] { width: 100%; accent-color: var(--accent); }
+  label small { color: var(--muted); }
+  .delay-box { display: flex; align-items: center; gap: 14px; margin: 8px 0 4px; }
+  .delay-value {
+    font-family: var(--mono); font-size: 22px; min-width: 108px; text-align: right;
+    color: var(--accent); font-variant-numeric: tabular-nums;
+  }
+  .delay-warn { color: var(--warn); font-size: 12px; min-height: 18px; }
+  .field { display: flex; flex-direction: column; gap: 5px; }
+  .row { display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap; }
+  .row > .field { flex: 1 1 180px; }
+  .muted { color: var(--muted); }
+  .mono { font-family: var(--mono); }
+  .small { font-size: 12px; }
+  .tiny { font-size: 11px; }
+  .client-card { background: #101a2d; border: 1px solid var(--line); border-radius: 12px; padding: 13px 14px; }
+  .client-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; margin-bottom: 8px; }
+  .client-head .name { font-weight: 600; }
+  .client-head .addr { font-family: var(--mono); font-size: 11.5px; color: var(--muted); }
+  .client-actions { display: flex; gap: 7px; margin-bottom: 10px; }
+  .client-actions select { flex: 1; min-width: 0; }
+  .inbox { display: flex; flex-direction: column; gap: 7px; max-height: 320px; overflow-y: auto; }
+  .msg {
+    border: 1px solid var(--line); border-left: 3px solid var(--muted); border-radius: 9px;
+    padding: 8px 10px; background: #0c1526; animation: pop .18s ease-out;
+  }
+  @keyframes pop { from { opacity: 0; transform: translateY(-3px); } to { opacity: 1; transform: none; } }
+  .msg.received { border-left-color: var(--ok); }
+  .msg.rejected { border-left-color: var(--warn); }
+  .msg.timeout { border-left-color: var(--bad); }
+  .msg.waiting { border-left-color: var(--accent); }
+  .msg .line1 { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
+  .msg .tag { font-size: 10.5px; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); }
+  .msg.received .tag { color: var(--ok); border-color: #24604a; }
+  .msg.rejected .tag { color: var(--warn); border-color: #6b5320; }
+  .msg.timeout .tag { color: var(--bad); border-color: #6b2c2c; }
+  .msg .body { margin-top: 4px; color: #d7e3f7; word-break: break-word; }
+  .msg .meta { margin-top: 4px; color: var(--muted); font-size: 11.5px; font-family: var(--mono); word-break: break-word; }
+  .msg .reason { margin-top: 5px; color: #ffd9a3; font-size: 12px; }
+  .empty { color: var(--muted); font-size: 12px; padding: 8px 2px; }
+  .ports { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }
+  .port-card { background: #101a2d; border: 1px solid var(--line); border-radius: 12px; padding: 13px 14px; }
+  .port-title { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+  .port-title .num { font-family: var(--mono); font-size: 17px; color: var(--accent); }
+  .slot { border-radius: 9px; padding: 8px 10px; margin-bottom: 7px; border: 1px dashed transparent; }
+  .slot.active { background: #102a22; border-color: #24604a; }
+  .slot.quarantine { background: #2b2311; border-color: #6b5320; }
+  .slot.free { background: #0c1526; border: 1px dashed #2c3d60; color: var(--muted); }
+  .slot .top { display: flex; justify-content: space-between; gap: 8px; font-size: 12.5px; }
+  .slot .up { font-weight: 600; }
+  .slot .bar { height: 4px; border-radius: 99px; background: #22314e; margin-top: 7px; overflow: hidden; }
+  .slot .bar > i { display: block; height: 100%; border-radius: 99px; transition: width .35s linear; }
+  .slot.active .bar > i { background: linear-gradient(90deg, #34d399, #22d3ee); }
+  .slot.quarantine .bar > i { background: linear-gradient(90deg, #fbbf24, #f97316); }
+  table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  th, td { text-align: left; padding: 7px 8px; border-bottom: 1px solid #1f2c46; }
+  th { color: var(--muted); font-weight: 500; font-size: 11.5px; text-transform: uppercase; letter-spacing: .5px; }
+  td.mono, th.mono { font-family: var(--mono); }
+  tbody tr:last-child td { border-bottom: none; }
+  .tag { display: inline-block; font-size: 10.5px; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); }
+  .tag.ok { color: var(--ok); border-color: #24604a; }
+  .tag.bad { color: var(--bad); border-color: #6b2c2c; }
+  .tag.warn { color: var(--warn); border-color: #6b5320; }
+  .tag.vio { color: var(--vio); border-color: #4c3a7a; }
+  .log { max-height: 360px; overflow-y: auto; display: flex; flex-direction: column; gap: 5px; font-size: 12px; }
+  .log .ev { display: grid; grid-template-columns: 62px 100px 1fr; gap: 8px; padding: 5px 7px;
+    border-radius: 7px; background: #0c1526; border: 1px solid #182541; }
+  .log .ev .t { color: var(--muted); font-family: var(--mono); font-size: 11px; }
+  .log .ev .k { font-size: 11px; }
+  .log .ev .m { color: #cfdcf3; word-break: break-word; }
+  .k-forward { color: var(--ok); } .k-reject, .k-drop_late, .k-error { color: var(--bad); }
+  .k-deliver { color: #67e8f9; } .k-session_expired, .k-quarantine_ended { color: var(--warn); }
+  .k-reset { color: var(--vio); } .k-drop_unknown { color: #c084fc; }
+  .counters { display: grid; grid-template-columns: repeat(auto-fit, minmax(112px, 1fr)); gap: 8px; margin-bottom: 14px; }
+  .counter { background: #101a2d; border: 1px solid var(--line); border-radius: 10px; padding: 9px 11px; }
+  .counter .n { font-family: var(--mono); font-size: 19px; font-variant-numeric: tabular-nums; }
+  .counter .l { color: var(--muted); font-size: 11px; margin-top: 1px; }
+  .banner { border-radius: 12px; padding: 12px 15px; margin-bottom: 16px; font-size: 13px;
+    border: 1px solid #4c3a7a; background: linear-gradient(180deg, #1d1838, #171329); color: #d9d2ff; }
+  .banner b { color: #c4b5fd; }
+  .toast { position: fixed; right: 18px; bottom: 18px; display: flex; flex-direction: column; gap: 8px; z-index: 30; }
+  .toast div { background: #16213a; border: 1px solid #31456c; border-radius: 10px; padding: 9px 13px;
+    font-size: 12.5px; box-shadow: 0 8px 30px #0008; animation: pop .2s ease-out; max-width: 380px; }
+  .toast div.err { border-color: #6b2c2c; }
+  .legend { display: flex; gap: 12px; flex-wrap: wrap; font-size: 11.5px; color: var(--muted); }
+  .legend i { display: inline-block; width: 9px; height: 9px; border-radius: 3px; margin-right: 4px; }
+  details summary { cursor: pointer; color: var(--muted); font-size: 12px; }
+  .flow { font-family: var(--mono); font-size: 11.5px; color: var(--muted); line-height: 1.7; }
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>UDP 双端口出口 · 运维演练</h1>
+    <div class="sub">三个本地客户端 → 两个回显服务；网关仅有两个上游出口端口，按会话分配与复用</div>
+  </div>
+  <div class="toolbar">
+    <span class="pill" id="health-pill"><span class="dot"></span><span id="health-text">连接中…</span></span>
+    <span class="pill mono" id="clock-pill">--:--:--</span>
+  </div>
+</header>
+
+<main>
+  <div class="banner">
+    <b>规则速览：</b>出口端口共 <span id="port-count">2</span> 个。会话 = 客户端地址 + 上游；
+    同一会话沿用原出口端口，同一上游的不同会话各占一个端口，不同上游可共用同一出口端口。
+    会话在最后一次向上游转发后 1 秒失效；失效后「原端口 + 该上游」组合再保留 2 秒，期间到达的回包直接丢弃，
+    端口仍可分配给其他上游。没有可用端口时不会转发，并在此说明原因。
+  </div>
+
+  <section style="margin-bottom:16px">
+    <h2>发送控制 <span class="hint">回包延迟 0–2 秒；真实 UDP 经网关转发</span></h2>
+    <div class="grid cols-2" style="align-items:start">
+      <div>
+        <label class="small muted">回包延迟</label>
+        <div class="delay-box">
+          <input type="range" id="delay" min="0" max="2000" step="50" value="0">
+          <div class="delay-value" id="delay-value">0 ms</div>
+        </div>
+        <div class="delay-warn" id="delay-warn"></div>
+        <div class="field" style="margin-top:6px">
+          <label class="small muted" for="body">消息内容</label>
+          <input type="text" id="body" maxlength="500" placeholder="可选，随包发送">
+        </div>
+      </div>
+      <div>
+        <div class="row" style="margin-top:22px">
+          <button class="primary" id="batch-send">全部发送 · 1→A / 2→B / 3→A</button>
+          <button id="batch-dual">2 并发到 A · 1→A / 2→A</button>
+          <button id="batch-3a">3 并发到 A · 演示无可用端口</button>
+        </div>
+        <div class="row" style="margin-top:10px">
+          <button class="ghost" id="reset-btn">重置演练状态</button>
+          <span class="small muted" id="last-action"></span>
+        </div>
+        <div class="tiny muted" style="margin-top:10px">
+          提示：延迟设为 ≥1000 ms 时，回包会晚于会话失效时间，用于观察「迟到回包被丢弃」。
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section style="margin-bottom:16px">
+    <h2>客户端与实收内容 <span class="hint">每张卡片是该客户端 UDP 套接字的收件箱</span></h2>
+    <div class="grid cols-3" id="clients"></div>
+  </section>
+
+  <section style="margin-bottom:16px">
+    <h2>出口端口占用 <span class="hint">绿色 = 活动会话；黄色 = 迟到回包保留期</span></h2>
+    <div class="ports" id="ports"></div>
+    <div class="legend" style="margin-top:12px">
+      <span><i style="background:#34d399"></i>活动会话</span>
+      <span><i style="background:#fbbf24"></i>保留期（仅丢弃该上游的迟到回包）</span>
+      <span><i style="background:#2c3d60"></i>空闲</span>
+    </div>
+  </section>
+
+  <section style="margin-bottom:16px">
+    <h2>会话表 <span class="hint">按「客户端 + 上游」识别，剩余寿命实时递减</span></h2>
+    <div style="overflow-x:auto">
+      <table>
+        <thead><tr><th>客户端</th><th>上游</th><th class="mono">出口端口</th><th>转发次数</th><th>空闲</th><th>会话剩余</th></tr></thead>
+        <tbody id="sessions"><tr><td colspan="6" class="empty">暂无活动会话</td></tr></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <h2>网关事件 <span class="hint">转发 / 丢弃 / 失效 / 保留期结束</span>
+      <span class="legend"><span id="event-count" class="mono tiny"></span></span>
+    </h2>
+    <div class="counters" id="counters"></div>
+    <div class="log" id="log"></div>
+  </section>
+
+  <section style="margin-top:16px">
+    <h2>拓扑与判定逻辑</h2>
+    <div class="grid cols-2">
+      <div class="flow" id="flow"></div>
+      <div class="small muted">
+        <p style="margin-top:0">分配顺序：先按 (客户端 IP, 客户端端口, 上游) 查活动会话；存在则沿用原出口端口并续期。
+        不存在则从两个出口端口中选择一个「未被同一上游占用、且不在该上游保留期内」的端口。
+        两个上游互不排斥，因此可以共用端口。</p>
+        <p>回包判定：按到达的出口端口与来源（映射回上游）查活动会话，命中则只送给该会话对应的客户端；
+        若处于保留期则丢弃并记 <span class="mono">drop_late</span>，避免迟到的旧回包被新会话误收。</p>
+        <details><summary>接口</summary>
+          <p class="tiny mono">GET /api/state · GET /api/events · POST /api/send · POST /api/send-batch · POST /api/reset · GET /healthz</p>
+        </details>
+      </div>
+    </div>
+  </section>
+</main>
+
+<div class="toast" id="toast"></div>
+
+<script>
+"use strict";
+const $ = (sel) => document.querySelector(sel);
+const state = {
+  delay: 0,
+  logTop: 0,
+  clients: [],
+};
+
+const fmtMs = (ms) => {
+  if (ms === null || ms === undefined) return "–";
+  if (ms < 1000) return `${Math.max(0, Math.round(ms))} ms`;
+  return `${(ms / 1000).toFixed(2)} s`;
+};
+const fmtClock = (ts) => {
+  const d = new Date(ts * 1000);
+  return d.toLocaleTimeString("zh-CN", { hour12: false }) + "." + String(d.getMilliseconds()).padStart(3, "0");
+};
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+function toast(message, isError = false) {
+  const node = document.createElement("div");
+  if (isError) node.className = "err";
+  node.textContent = message;
+  $("#toast").appendChild(node);
+  setTimeout(() => node.remove(), 4200);
+}
+
+async function api(path, options = {}) {
+  const response = await fetch(path, {
+    headers: { "Content-Type": "application/json" },
+    ...options,
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.detail || `HTTP ${response.status}`);
+  return data;
+}
+
+function onDelayInput() {
+  state.delay = Number($("#delay").value);
+  $("#delay-value").textContent = state.delay === 0 ? "0 ms" : fmtMs(state.delay);
+  const warn = $("#delay-warn");
+  if (state.delay >= 1000) {
+    warn.textContent = `延迟 ${fmtMs(state.delay)} ≥ 会话寿命 1 秒：回包将迟到并触发保留期丢弃`;
+    warn.style.color = "var(--bad)";
+  } else if (state.delay >= 800) {
+    warn.textContent = `延迟 ${fmtMs(state.delay)} 接近 1 秒会话寿命，注意时序`;
+    warn.style.color = "var(--warn)";
+  } else {
+    warn.textContent = "";
+  }
+}
+
+async function send(clientId, upstream) {
+  const body = $("#body").value;
+  try {
+    const data = await api("/api/send", {
+      method: "POST",
+      body: JSON.stringify({
+        client_id: clientId,
+        upstream,
+        delay_ms: state.delay,
+        body,
+      }),
+    });
+    noteAction(`已发送：${clientId} → ${upstream}（延迟 ${state.delay} ms）`);
+    return data.sent;
+  } catch (error) {
+    toast(`发送失败：${error.message}`, true);
+    return null;
+  }
+}
+
+async function sendBatch(sends, label) {
+  try {
+    const data = await api("/api/send-batch", {
+      method: "POST",
+      body: JSON.stringify({ delay_ms: state.delay, body: $("#body").value, sends }),
+    });
+    noteAction(`${label} · 延迟 ${state.delay} ms`);
+    return data.sent;
+  } catch (error) {
+    toast(`批量发送失败：${error.message}`, true);
+    return null;
+  }
+}
+
+function noteAction(text) {
+  $("#last-action").textContent = text;
+}
+
+async function resetAll() {
+  try {
+    await api("/api/reset", { method: "POST", body: JSON.stringify({ confirm: true }) });
+    state.logTop = 0;
+    $("#log").innerHTML = "";
+    $("#sessions").innerHTML = '<tr><td colspan="6" class="empty">暂无活动会话</td></tr>';
+    toast("演练状态已重置");
+    await refresh();
+  } catch (error) {
+    toast(`重置失败：${error.message}`, true);
+  }
+}
+
+function renderClients(clients) {
+  state.clients = clients;
+  const host = $("#clients");
+  if (!clients.length) { host.innerHTML = '<div class="empty">客户端未就绪</div>'; return; }
+  for (const client of clients) {
+    let card = host.querySelector(`[data-client="${client.id}"]`);
+    if (!card) {
+      card = document.createElement("div");
+      card.className = "client-card";
+      card.dataset.client = client.id;
+      card.innerHTML = `
+        <div class="client-head">
+          <span class="name">${esc(client.label)}</span>
+          <span class="addr" data-role="addr">–</span>
+        </div>
+        <div class="client-actions">
+          <select data-role="upstream"></select>
+          <button data-role="send" class="primary">发送</button>
+        </div>
+        <div class="inbox" data-role="inbox"><div class="empty">尚无收包</div></div>`;
+      card.querySelector('[data-role="send"]').addEventListener("click", () => {
+        send(client.id, card.querySelector('[data-role="upstream"]').value);
+      });
+      host.appendChild(card);
+    }
+    card.querySelector('[data-role="addr"]').textContent = client.local_addr || "未绑定";
+    const select = card.querySelector('[data-role="upstream"]');
+    if (!select.options.length && state.upstreams) {
+      for (const up of state.upstreams) {
+        const option = document.createElement("option");
+        option.value = up.key;
+        option.textContent = `${up.label} (${up.key})`;
+        select.appendChild(option);
+      }
+    }
+    renderInbox(card.querySelector('[data-role="inbox"]'), client);
+  }
+}
+
+function renderInbox(host, client) {
+  const messages = client.messages || [];
+  if (!messages.length) { host.innerHTML = '<div class="empty">尚无收包</div>'; return; }
+  const signature = messages.map((m) => `${m.request_id}:${m.status}:${m.rtt_ms ?? ""}`).join("|");
+  if (host.dataset.signature === signature) return;
+  host.dataset.signature = signature;
+  host.innerHTML = messages.map((m) => {
+    const tag = { received: "已收包", rejected: "未转发", timeout: "超时", waiting: "等待中" }[m.status] || m.status;
+    const r = m.received;
+    const parts = [];
+    if (r && r.echo_service) parts.push(`回显 <b>${esc(r.echo_service)}</b>`);
+    if (r && r.gateway_egress_port !== undefined) parts.push(`出口端口 <b>${r.gateway_egress_port}</b>`);
+    if (r && r.client_local) parts.push(`客户端源 ${esc(r.client_local)}`);
+    if (r && r.applied_delay_ms !== undefined) parts.push(`实际延迟 ${fmtMs(r.applied_delay_ms)}`);
+    if (m.rtt_ms !== null && m.rtt_ms !== undefined) parts.push(`RTT ${fmtMs(m.rtt_ms)}`);
+    if (r && r.raw_bytes !== undefined) parts.push(`${r.raw_bytes} B`);
+    const meta = parts.join(" · ");
+    const body = m.body || (r && r.body) || "";
+    return `<div class="msg ${m.status}">
+      <div class="line1">
+        <span><span class="tag">${tag}</span> <span class="tiny muted">${esc(m.upstream_label || m.upstream)}</span></span>
+        <span class="tiny muted mono">${esc(m.sent_at ? fmtClock(m.sent_at) : "")}</span>
+      </div>
+      ${body ? `<div class="body">${esc(body)}</div>` : ""}
+      ${meta ? `<div class="meta">${meta}</div>` : ""}
+      ${m.error ? `<div class="reason">网关未转发：${esc(m.error)}</div>` : ""}
+      ${m.note && !m.received ? `<div class="reason">${esc(m.note)}</div>` : ""}
+      ${m.received && m.received.echo_addr ? `<div class="meta">上游响应地址 ${esc(m.received.echo_addr)}</div>` : ""}
+    </div>`;
+  }).join("");
+}
+
+function renderPorts(ports, config) {
+  const host = $("#ports");
+  const html = ports.map((port) => {
+    const slots = [];
+    for (const session of port.sessions) {
+      const pct = Math.max(0, Math.min(100, (session.remaining_ms / (config.session_idle_seconds * 1000)) * 100));
+      slots.push(`<div class="slot active">
+        <div class="top"><span class="up">${esc(session.upstream_label)}</span><span class="mono tiny">${esc(session.client)}</span></div>
+        <div class="tiny muted">活动会话 · 剩余 ${fmtMs(session.remaining_ms)} · 已转发 ${session.forward_count} 次</div>
+        <div class="bar"><i style="width:${pct}%"></i></div>
+      </div>`);
+    }
+    for (const q of port.quarantines) {
+      const total = config.quarantine_seconds * 1000;
+      const pct = Math.max(0, Math.min(100, (q.remaining_ms / total) * 100));
+      slots.push(`<div class="slot quarantine">
+        <div class="top"><span class="up">${esc(q.upstream_label)}</span><span class="mono tiny">保留中</span></div>
+        <div class="tiny muted">迟到回包保留期 · 剩余 ${fmtMs(q.remaining_ms)}（该上游回包丢弃）</div>
+        <div class="bar"><i style="width:${pct}%"></i></div>
+      </div>`);
+    }
+    if (!slots.length) slots.push('<div class="slot free">空闲 · 可分配给任一上游</div>');
+    return `<div class="port-card">
+      <div class="port-title"><span class="num">:${port.port}</span>
+      <span class="tiny muted">${port.sessions.length} 会话 · ${port.quarantines.length} 保留</span></div>
+      ${slots.join("")}
+    </div>`;
+  }).join("");
+  if (host.dataset.signature !== html) { host.innerHTML = html; host.dataset.signature = html; }
+}
+
+function renderSessions(sessions, config) {
+  const body = $("#sessions");
+  if (!sessions.length) { body.innerHTML = '<tr><td colspan="6" class="empty">暂无活动会话</td></tr>'; return; }
+  const html = sessions.map((s) => {
+    const pct = Math.max(0, Math.min(100, (s.remaining_ms / (config.session_idle_seconds * 1000)) * 100));
+    return `<tr>
+      <td class="mono">${esc(s.client)}</td>
+      <td>${esc(s.upstream_label)} <span class="tiny muted">${esc(s.upstream)}</span></td>
+      <td class="mono">:${s.egress_port}</td>
+      <td class="mono">${s.forward_count}</td>
+      <td class="mono">${fmtMs(s.idle_ms)}</td>
+      <td style="min-width:150px"><div class="tiny mono">${fmtMs(s.remaining_ms)}</div>
+        <div class="bar" style="height:4px;background:#22314e;border-radius:99px;overflow:hidden;margin-top:4px">
+        <i style="display:block;height:100%;width:${pct}%;background:linear-gradient(90deg,#34d399,#22d3ee)"></i></div></td>
+    </tr>`;
+  }).join("");
+  if (body.dataset.signature !== html) { body.innerHTML = html; body.dataset.signature = html; }
+}
+
+const COUNTER_LABELS = {
+  packets_in: "入口收包",
+  forwarded: "已转发",
+  rejected: "未转发",
+  replies_in: "出口回包",
+  delivered: "已送达",
+  dropped_late: "迟到丢弃",
+  dropped_unknown: "未知丢弃",
+  sessions_created: "新建会话",
+  sessions_expired: "会话失效",
+  quarantines_started: "进入保留期",
+};
+
+function renderCounters(counters) {
+  $("#counters").innerHTML = Object.entries(COUNTER_LABELS).map(([key, label]) =>
+    `<div class="counter"><div class="n">${counters[key] ?? 0}</div><div class="l">${label}</div></div>`).join("");
+}
+
+function renderEvents(events, lastSeq) {
+  const log = $("#log");
+  if (lastSeq < state.logTop) { state.logTop = 0; log.innerHTML = ""; }  // server restarted
+  const fresh = events.filter((event) => event.seq > state.logTop);
+  if (fresh.length) {
+    for (const event of fresh) {
+      const node = document.createElement("div");
+      node.className = "ev";
+      node.innerHTML = `<div class="t">${esc(fmtClock(event.at))}</div>
+        <div class="k k-${esc(event.kind)}">${esc(event.kind)}</div>
+        <div class="m">${esc(event.message)}</div>`;
+      log.prepend(node);
+    }
+    state.logTop = lastSeq;
+    while (log.children.length > 200) log.lastChild.remove();
+  }
+  $("#event-count").textContent = `共 ${lastSeq} 条`;
+}
+
+function renderFlow(config, runtime) {
+  const lines = [];
+  lines.push("客户端（网关容器内，独立 UDP 源端口）");
+  lines.push("  client-1 ─┐");
+  lines.push("  client-2 ─┼─▶ ingress :15001 (echo-a) ─┐");
+  lines.push("  client-3 ─┘                            ├─▶ egress :17000 / :17001 ─▶ echo-a / echo-b");
+  lines.push("            └──▶ ingress :15002 (echo-b) ─┘");
+  lines.push("");
+  lines.push(`出口端口：${config.egress_ports.join(" / ")}`);
+  lines.push(`会话寿命：${config.session_idle_seconds} s · 组合保留：${config.quarantine_seconds} s`);
+  $("#flow").innerHTML = lines.map((line) => `<div>${esc(line) || "&nbsp;"}</div>`).join("");
+  $("#port-count").textContent = config.egress_ports.length;
+}
+
+let refreshing = false;
+async function refresh() {
+  if (refreshing) return;
+  refreshing = true;
+  try {
+    const data = await api("/api/state");
+    state.upstreams = data.config.upstreams;
+    renderFlow(data.config, data);
+    renderClients(data.clients);
+    renderPorts(data.ports, data.config);
+    renderSessions(data.sessions, data.config);
+    renderCounters(data.counters);
+    renderEvents(data.events, data.last_seq);
+    $("#health-pill").className = "pill ok";
+    $("#health-text").textContent = "网关在线";
+    $("#clock-pill").textContent = new Date(data.server_time * 1000).toLocaleTimeString("zh-CN", { hour12: false });
+  } catch (error) {
+    $("#health-pill").className = "pill bad";
+    $("#health-text").textContent = "离线";
+  } finally {
+    refreshing = false;
+  }
+}
+
+function bind() {
+  for (const id of ["#delay", "#batch-send", "#batch-dual", "#batch-3a", "#reset-btn"]) {
+    if (!$(id)) console.warn("missing", id);
+  }
+  $("#delay").addEventListener("input", onDelayInput);
+  $("#batch-send").addEventListener("click", () => sendBatch([
+    { client_id: "client-1", upstream: "echo-a", delay_ms: state.delay, body: $("#body").value },
+    { client_id: "client-2", upstream: "echo-b", delay_ms: state.delay, body: $("#body").value },
+    { client_id: "client-3", upstream: "echo-a", delay_ms: state.delay, body: $("#body").value },
+  ], "全部发送"));
+  $("#batch-dual").addEventListener("click", () => sendBatch([
+    { client_id: "client-1", upstream: "echo-a", delay_ms: state.delay, body: $("#body").value },
+    { client_id: "client-2", upstream: "echo-a", delay_ms: state.delay, body: $("#body").value },
+  ], "并发到 A"));
+  $("#batch-3a").addEventListener("click", () => sendBatch([
+    { client_id: "client-1", upstream: "echo-a", delay_ms: state.delay, body: $("#body").value },
+    { client_id: "client-2", upstream: "echo-a", delay_ms: state.delay, body: $("#body").value },
+    { client_id: "client-3", upstream: "echo-a", delay_ms: state.delay, body: $("#body").value },
+  ], "3 并发到 A"));
+  $("#reset-btn").addEventListener("click", resetAll);
+  onDelayInput();
+}
+
+bind();
+refresh();
+setInterval(refresh, 500);
+</script>
+</body>
+</html>
